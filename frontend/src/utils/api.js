@@ -1,4 +1,4 @@
-const API_URL = 'https://health_companion-2.onrender.com/api';
+const API_URL = 'https://health-companion-2.onrender.com/api/auth/login';
 
 const getAuthHeader = () => {
   const userInfo = localStorage.getItem('userInfo');
