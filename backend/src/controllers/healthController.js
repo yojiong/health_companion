@@ -1,238 +1,191 @@
-const HealthData = require('../models/HealthData');
-const Alert = require('../models/Alert');
-const User = require('../models/User');
+require('dotenv').config();
 
-/**
- * 生成模拟数据（只用于没有数据时 fallback）
- */
-const generateSimulationData = (userId, count = 1, startDate = new Date()) => {
-  const data = [];
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const cors = require('cors');
+const connectDB = require('./config/db');
 
-  for (let i = 0; i < count; i++) {
-    const timestamp = new Date(startDate.getTime() - (count - 1 - i) * 5000);
+const authRoutes = require('./routes/authRoutes');
+const healthRoutes = require('./routes/healthRoutes');
+const medicationRoutes = require('./routes/medicationRoutes');
+const alertRoutes = require('./routes/alertRoutes');
 
-    data.push({
-      userId,
-      heartRate: Math.floor(Math.random() * 40) + 60,
-      spO2: Math.floor(Math.random() * 8) + 92,
-      temperature: Math.random() * 2 + 36,
-      steps: Math.floor(Math.random() * 500),
-      sleepHours: Math.random() * 4 + 6,
-      timestamp
-    });
+const User = require('./models/User');
+const HealthData = require('./models/HealthData');
+const Alert = require('./models/Alert');
+
+const app = express();
+
+/* =========================
+   CORS（统一修复）
+========================= */
+const allowedOrigins = [
+  'http://localhost:5173',
+  'https://health-companion-1.onrender.com',
+  'https://health-companion-2.onrender.com'
+];
+
+app.use(cors({
+  origin: allowedOrigins,
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+app.use(express.json());
+
+/* =========================
+   HTTP + Socket
+========================= */
+const server = http.createServer(app);
+
+const io = new Server(server, {
+  cors: {
+    origin: allowedOrigins,
+    methods: ['GET', 'POST'],
+    credentials: true
   }
+});
 
-  return data;
+/* =========================
+   DB Init
+========================= */
+connectDB().then(() => {
+  console.log('DB connected');
+  initDemoUsers();
+});
+
+/* =========================
+   Demo users
+========================= */
+const initDemoUsers = async () => {
+  try {
+    const demoUsers = [
+      {
+        name: 'Demo Patient',
+        email: 'patient@demo.com',
+        password: 'password',
+        role: 'patient',
+        phone: '123-456-7890'
+      },
+      {
+        name: 'Demo Caregiver',
+        email: 'care@demo.com',
+        password: 'password',
+        role: 'caregiver',
+        phone: '098-765-4321'
+      }
+    ];
+
+    for (const userData of demoUsers) {
+      const exists = await User.findOne({ email: userData.email });
+      if (!exists) {
+        await User.create(userData);
+        console.log(`Created demo user: ${userData.email}`);
+      }
+    }
+  } catch (err) {
+    console.error(err);
+  }
 };
 
-const healthController = {
+/* =========================
+   Routes
+========================= */
+app.use('/api/auth', authRoutes);
+app.use('/api/health', healthRoutes);
+app.use('/api/medications', medicationRoutes);
+app.use('/api/alerts', alertRoutes);
 
-  // =========================
-  // 上传数据
-  // =========================
-  uploadData: async (req, res) => {
-    try {
-      const { heartRate, spO2, steps, sleepHours, temperature } = req.body;
+app.get('/api/health-check', (req, res) => {
+  res.json({ status: 'ok' });
+});
 
-      const healthData = await HealthData.create({
-        userId: req.user._id,
+/* =========================
+   Socket
+========================= */
+io.on('connection', (socket) => {
+  console.log('Socket connected:', socket.id);
+
+  socket.on('join', (userId) => {
+    if (!userId) return;
+    socket.join(userId);
+  });
+
+  socket.on('disconnect', () => {
+    console.log('Socket disconnected');
+  });
+});
+
+/* =========================
+   防止重复 interval
+========================= */
+let intervalStarted = false;
+
+const simulateSensorData = async () => {
+  try {
+    const patients = await User.find({ role: 'patient' });
+
+    for (const patient of patients) {
+      const heartRate = Math.floor(Math.random() * 40) + 60;
+      const spO2 = Math.floor(Math.random() * 8) + 92;
+      const temperature = Math.random() * 2 + 36;
+
+      const data = await HealthData.create({
+        userId: patient._id,
         heartRate,
         spO2,
-        steps,
-        sleepHours,
-        temperature
+        temperature,
+        steps: Math.floor(Math.random() * 500),
+        sleepHours: Math.random() * 4 + 6
       });
 
-      // 心率异常
-      if (heartRate > 100 || heartRate < 50) {
-        const exists = await Alert.findOne({
-          userId: req.user._id,
+      io.to(patient._id.toString()).emit('healthData', data);
+
+      // heart alert
+      if (heartRate > 100) {
+        const alert = await Alert.create({
+          userId: patient._id,
           alertType: 'heart_rate',
-          isResolved: false
+          severity: heartRate > 120 ? 'critical' : 'high',
+          message: `Heart rate: ${heartRate}`,
+          value: heartRate
         });
 
-        if (!exists) {
-          await Alert.create({
-            userId: req.user._id,
-            alertType: 'heart_rate',
-            severity: heartRate > 120 ? 'critical' : 'high',
-            message: `Abnormal heart rate: ${heartRate} bpm`,
-            value: heartRate
-          });
-        }
+        io.to(patient._id.toString()).emit('alert', alert);
       }
 
-      // 血氧异常
+      // oxygen alert
       if (spO2 < 90) {
-        await Alert.create({
-          userId: req.user._id,
+        const alert = await Alert.create({
+          userId: patient._id,
           alertType: 'spO2',
           severity: 'critical',
-          message: `Low SpO2 detected: ${spO2}%`,
+          message: `Low SpO2: ${spO2}%`,
           value: spO2
         });
+
+        io.to(patient._id.toString()).emit('alert', alert);
       }
-
-      // 体温异常
-      if (temperature > 38.5 || temperature < 35) {
-        await Alert.create({
-          userId: req.user._id,
-          alertType: 'temperature',
-          severity: 'high',
-          message: `Abnormal temperature: ${temperature}°C`,
-          value: temperature
-        });
-      }
-
-      res.status(201).json(healthData);
-    } catch (error) {
-      res.status(500).json({ message: error.message });
     }
-  },
-
-  // =========================
-  // 实时数据
-  // =========================
- getRealtimeData: async (req, res) => {
-  try {
-    let latest = await HealthData.findOne({ userId: req.user._id })
-      .sort({ createdAt: -1 });
-
-    if (!latest) {
-      latest = {
-        userId: req.user._id,
-        heartRate: 75,
-        spO2: 97,
-        temperature: 36.5,
-        steps: 100,
-        sleepHours: 7,
-        createdAt: new Date()
-      };
-    }
-
-    res.json(latest);
   } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-}
-
-  // =========================
-  // 历史数据（重点优化）
-  // =========================
- getHistoricalData: async (req, res) => {
-  try {
-    const { period = 'day' } = req.query;
-
-    let count = 24;
-    if (period === 'week') count = 7 * 24;
-    if (period === 'month') count = 30 * 24;
-
-    let data = await HealthData.find({ userId: req.user._id })
-      .sort({ createdAt: 1 });
-
-    // ❗关键：如果没数据 → 强制生成
-    if (!data || data.length < 10) {
-      data = Array.from({ length: count }, (_, i) => ({
-        userId: req.user._id,
-        heartRate: 60 + Math.random() * 40,
-        spO2: 92 + Math.random() * 6,
-        temperature: 36 + Math.random(),
-        steps: Math.floor(Math.random() * 300),
-        sleepHours: 6 + Math.random() * 2,
-        createdAt: new Date(Date.now() - i * 60000)
-      }));
-    }
-
-    res.json(data);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-}
-
-  // =========================
-  // 病人实时数据
-  // =========================
-  getPatientData: async (req, res) => {
-    try {
-      const { patientId } = req.params;
-
-      let latest = await HealthData.findOne({ userId: patientId })
-        .sort({ createdAt: -1 });
-
-      if (!latest) {
-        latest = generateSimulationData(patientId, 1)[0];
-        await HealthData.create(latest);
-      }
-
-      res.json(latest);
-    } catch (error) {
-      res.status(500).json({ message: error.message });
-    }
-  },
-
-  // =========================
-  // 病人历史数据
-  // =========================
-  getPatientHistoricalData: async (req, res) => {
-    try {
-      const { patientId } = req.params;
-      const { period = 'week' } = req.query;
-
-      let startDate = new Date();
-      let limit = 200;
-
-      if (period === 'day') {
-        startDate.setDate(startDate.getDate() - 1);
-        limit = 100;
-      } else if (period === 'week') {
-        startDate.setDate(startDate.getDate() - 7);
-      } else if (period === 'month') {
-        startDate.setMonth(startDate.getMonth() - 1);
-        limit = 300;
-      }
-
-      let data = await HealthData.find({
-        userId: patientId,
-        createdAt: { $gte: startDate }
-      }).sort({ createdAt: 1 });
-
-      if (data.length === 0) {
-        data = generateSimulationData(patientId, limit, new Date());
-      }
-
-      res.json(data);
-    } catch (error) {
-      res.status(500).json({ message: error.message });
-    }
-  },
-
-  // =========================
-  // 统计
-  // =========================
-  getStats: async (req, res) => {
-    try {
-      const patientCount = await User.countDocuments({ role: 'patient' });
-      const caregiverCount = await User.countDocuments({ role: 'caregiver' });
-
-      const todayAlerts = await Alert.countDocuments({
-        createdAt: { $gte: new Date().setHours(0, 0, 0, 0) }
-      });
-
-      const criticalAlerts = await Alert.countDocuments({
-        severity: 'critical',
-        isResolved: false
-      });
-
-      res.json({
-        patientCount,
-        caregiverCount,
-        todayAlerts,
-        criticalAlerts
-      });
-    } catch (error) {
-      res.status(500).json({ message: error.message });
-    }
+    console.error('Simulation error:', err);
   }
 };
 
-module.exports = healthController;
+/* =========================
+   start interval ONLY ONCE
+========================= */
+if (!intervalStarted) {
+  setInterval(simulateSensorData, 5000);
+  intervalStarted = true;
+}
+
+/* =========================
+   Start server
+========================= */
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
