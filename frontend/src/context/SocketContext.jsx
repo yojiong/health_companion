@@ -18,7 +18,7 @@ export const SocketProvider = ({ children }) => {
 
   useEffect(() => {
     if (user && user._id) {
-      const newSocket = io('http://localhost:5000');
+      const newSocket = io('https://health_companion-2.onrender.com');
       newSocket.emit('join', user._id);
       setSocket(newSocket);
 
