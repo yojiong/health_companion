@@ -112,39 +112,35 @@ const healthController = {
   // =========================
   // 历史数据（重点优化）
   // =========================
-  getHistoricalData: async (req, res) => {
-    try {
-      const { period = 'week' } = req.query;
+ getHistoricalData: async (req, res) => {
+  try {
+    const { period = 'day' } = req.query;
 
-      let startDate = new Date();
-      let limit = 100;
+    let count = 24;
+    if (period === 'week') count = 7 * 24;
+    if (period === 'month') count = 30 * 24;
 
-      if (period === 'day') {
-        startDate.setDate(startDate.getDate() - 1);
-        limit = 100;
-      } else if (period === 'week') {
-        startDate.setDate(startDate.getDate() - 7);
-        limit = 200;
-      } else if (period === 'month') {
-        startDate.setMonth(startDate.getMonth() - 1);
-        limit = 300;
-      }
+    let data = await HealthData.find({ userId: req.user._id })
+      .sort({ createdAt: 1 });
 
-      let data = await HealthData.find({
+    // ❗关键：如果没数据 → 强制生成
+    if (!data || data.length < 10) {
+      data = Array.from({ length: count }, (_, i) => ({
         userId: req.user._id,
-        createdAt: { $gte: startDate }
-      }).sort({ createdAt: 1 });
-
-      // 只做 fallback，不写数据库（关键修复）
-      if (data.length === 0) {
-        data = generateSimulationData(req.user._id, limit, new Date());
-      }
-
-      res.json(data);
-    } catch (error) {
-      res.status(500).json({ message: error.message });
+        heartRate: 60 + Math.random() * 40,
+        spO2: 92 + Math.random() * 6,
+        temperature: 36 + Math.random(),
+        steps: Math.floor(Math.random() * 300),
+        sleepHours: 6 + Math.random() * 2,
+        createdAt: new Date(Date.now() - i * 60000)
+      }));
     }
-  },
+
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
 
   // =========================
   // 病人实时数据
