@@ -1,5 +1,4 @@
 require('dotenv').config();
-const cors = require('cors');
 
 app.use(cors({
   origin: 'https://health_companion-1-nfds.onrender.com',  // 你的前端域名
