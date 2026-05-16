@@ -1,201 +1,191 @@
-const HealthData = require('../models/HealthData');
-const Alert = require('../models/Alert');
-const User = require('../models/User');
+require('dotenv').config();
 
-const generateSimulationData = (userId, count = 1, startDate = new Date()) => {
-  const data = [];
-  for (let i = 0; i < count; i++) {
-    const timestamp = new Date(startDate.getTime() - (count - 1 - i) * 5000);
-    data.push({
-      userId,
-      heartRate: Math.floor(Math.random() * 40) + 60,
-      spO2: Math.floor(Math.random() * 8) + 92,
-      temperature: Math.random() * 2 + 36,
-      steps: Math.floor(Math.random() * 500),
-      sleepHours: Math.random() * 4 + 6,
-      timestamp
-    });
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const cors = require('cors');
+const connectDB = require('./config/db');
+
+const authRoutes = require('./routes/authRoutes');
+const healthRoutes = require('./routes/healthRoutes');
+const medicationRoutes = require('./routes/medicationRoutes');
+const alertRoutes = require('./routes/alertRoutes');
+
+const User = require('./models/User');
+const HealthData = require('./models/HealthData');
+const Alert = require('./models/Alert');
+
+const app = express();
+
+/* =========================
+   CORS（统一修复）
+========================= */
+const allowedOrigins = [
+  'http://localhost:5173',
+  'https://health-companion-1.onrender.com',
+  'https://health-companion-2.onrender.com'
+];
+
+app.use(cors({
+  origin: allowedOrigins,
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+app.use(express.json());
+
+/* =========================
+   HTTP + Socket
+========================= */
+const server = http.createServer(app);
+
+const io = new Server(server, {
+  cors: {
+    origin: allowedOrigins,
+    methods: ['GET', 'POST'],
+    credentials: true
   }
-  return data;
+});
+
+/* =========================
+   DB Init
+========================= */
+connectDB().then(() => {
+  console.log('DB connected');
+  initDemoUsers();
+});
+
+/* =========================
+   Demo users
+========================= */
+const initDemoUsers = async () => {
+  try {
+    const demoUsers = [
+      {
+        name: 'Demo Patient',
+        email: 'patient@demo.com',
+        password: 'password',
+        role: 'patient',
+        phone: '123-456-7890'
+      },
+      {
+        name: 'Demo Caregiver',
+        email: 'care@demo.com',
+        password: 'password',
+        role: 'caregiver',
+        phone: '098-765-4321'
+      }
+    ];
+
+    for (const userData of demoUsers) {
+      const exists = await User.findOne({ email: userData.email });
+      if (!exists) {
+        await User.create(userData);
+        console.log(`Created demo user: ${userData.email}`);
+      }
+    }
+  } catch (err) {
+    console.error(err);
+  }
 };
 
-const healthController = {
-  uploadData: async (req, res) => {
-    try {
-      const { heartRate, spO2, steps, sleepHours, temperature } = req.body;
+/* =========================
+   Routes
+========================= */
+app.use('/api/auth', authRoutes);
+app.use('/api/health', healthRoutes);
+app.use('/api/medications', medicationRoutes);
+app.use('/api/alerts', alertRoutes);
 
-      const healthData = await HealthData.create({
-        userId: req.user._id,
+app.get('/api/health-check', (req, res) => {
+  res.json({ status: 'ok' });
+});
+
+/* =========================
+   Socket
+========================= */
+io.on('connection', (socket) => {
+  console.log('Socket connected:', socket.id);
+
+  socket.on('join', (userId) => {
+    if (!userId) return;
+    socket.join(userId);
+  });
+
+  socket.on('disconnect', () => {
+    console.log('Socket disconnected');
+  });
+});
+
+/* =========================
+   防止重复 interval
+========================= */
+let intervalStarted = false;
+
+const simulateSensorData = async () => {
+  try {
+    const patients = await User.find({ role: 'patient' });
+
+    for (const patient of patients) {
+      const heartRate = Math.floor(Math.random() * 40) + 60;
+      const spO2 = Math.floor(Math.random() * 8) + 92;
+      const temperature = Math.random() * 2 + 36;
+
+      const data = await HealthData.create({
+        userId: patient._id,
         heartRate,
         spO2,
-        steps,
-        sleepHours,
-        temperature
+        temperature,
+        steps: Math.floor(Math.random() * 500),
+        sleepHours: Math.random() * 4 + 6
       });
 
-      if (heartRate > 100 || heartRate < 50) {
-        await Alert.create({
-          userId: req.user._id,
-          alertType: 'high_heart_rate',
+      io.to(patient._id.toString()).emit('healthData', data);
+
+      // heart alert
+      if (heartRate > 100) {
+        const alert = await Alert.create({
+          userId: patient._id,
+          alertType: 'heart_rate',
           severity: heartRate > 120 ? 'critical' : 'high',
-          message: `Abnormal heart rate detected: ${heartRate} bpm`,
+          message: `Heart rate: ${heartRate}`,
           value: heartRate
         });
+
+        io.to(patient._id.toString()).emit('alert', alert);
       }
 
+      // oxygen alert
       if (spO2 < 90) {
-        await Alert.create({
-          userId: req.user._id,
-          alertType: 'low_spO2',
+        const alert = await Alert.create({
+          userId: patient._id,
+          alertType: 'spO2',
           severity: 'critical',
-          message: `Low blood oxygen detected: ${spO2}%`,
+          message: `Low SpO2: ${spO2}%`,
           value: spO2
         });
-      }
 
-      if (temperature > 38.5 || temperature < 35) {
-        await Alert.create({
-          userId: req.user._id,
-          alertType: 'abnormal_temperature',
-          severity: 'high',
-          message: `Abnormal temperature detected: ${temperature}°C`,
-          value: temperature
-        });
+        io.to(patient._id.toString()).emit('alert', alert);
       }
-
-      res.status(201).json(healthData);
-    } catch (error) {
-      res.status(500).json({ message: error.message });
     }
-  },
-
-  getRealtimeData: async (req, res) => {
-    try {
-      let latestData = await HealthData.findOne({ userId: req.user._id })
-        .sort({ timestamp: -1 })
-        .limit(1);
-
-      if (!latestData) {
-        const simData = generateSimulationData(req.user._id, 1);
-        latestData = await HealthData.create(simData[0]);
-      }
-
-      res.json(latestData);
-    } catch (error) {
-      res.status(500).json({ message: error.message });
-    }
-  },
-
-  getHistoricalData: async (req, res) => {
-    try {
-      const { period } = req.query;
-      let startDate = new Date();
-      let dataCount = 100;
-
-      if (period === 'day') {
-        startDate.setHours(startDate.getHours() - 24);
-        dataCount = 100;
-      } else if (period === 'week') {
-        startDate.setDate(startDate.getDate() - 7);
-        dataCount = 200;
-      } else if (period === 'month') {
-        startDate.setMonth(startDate.getMonth() - 1);
-        dataCount = 300;
-      } else {
-        startDate.setDate(startDate.getDate() - 7);
-        dataCount = 200;
-      }
-
-      let data = await HealthData.find({
-        userId: req.user._id,
-        timestamp: { $gte: startDate }
-      }).sort({ timestamp: 1 });
-
-      if (data.length < 10) {
-        const simData = generateSimulationData(req.user._id, dataCount, new Date());
-        data = await HealthData.insertMany(simData);
-      }
-
-      res.json(data);
-    } catch (error) {
-      res.status(500).json({ message: error.message });
-    }
-  },
-
-  getPatientData: async (req, res) => {
-    try {
-      const { patientId } = req.params;
-      let latestData = await HealthData.findOne({ userId: patientId })
-        .sort({ timestamp: -1 })
-        .limit(1);
-
-      if (!latestData) {
-        const simData = generateSimulationData(patientId, 1);
-        latestData = await HealthData.create(simData[0]);
-      }
-
-      res.json(latestData);
-    } catch (error) {
-      res.status(500).json({ message: error.message });
-    }
-  },
-
-  getPatientHistoricalData: async (req, res) => {
-    try {
-      const { patientId } = req.params;
-      const { period } = req.query;
-      let startDate = new Date();
-      let dataCount = 100;
-
-      if (period === 'day') {
-        startDate.setHours(startDate.getHours() - 24);
-        dataCount = 100;
-      } else if (period === 'week') {
-        startDate.setDate(startDate.getDate() - 7);
-        dataCount = 200;
-      } else if (period === 'month') {
-        startDate.setMonth(startDate.getMonth() - 1);
-        dataCount = 300;
-      } else {
-        startDate.setDate(startDate.getDate() - 7);
-        dataCount = 200;
-      }
-
-      let data = await HealthData.find({
-        userId: patientId,
-        timestamp: { $gte: startDate }
-      }).sort({ timestamp: 1 });
-
-      if (data.length < 10) {
-        const simData = generateSimulationData(patientId, dataCount, new Date());
-        data = await HealthData.insertMany(simData);
-      }
-
-      res.json(data);
-    } catch (error) {
-      res.status(500).json({ message: error.message });
-    }
-  },
-
-  getStats: async (req, res) => {
-    try {
-      const patientCount = await User.countDocuments({ role: 'patient' });
-      const caregiverCount = await User.countDocuments({ role: 'caregiver' });
-      const todayAlerts = await Alert.countDocuments({
-        createdAt: { $gte: new Date(new Date().setHours(0, 0, 0, 0)) }
-      });
-      const criticalAlerts = await Alert.countDocuments({ severity: 'critical', isResolved: false });
-
-      res.json({
-        patientCount,
-        caregiverCount,
-        todayAlerts,
-        criticalAlerts
-      });
-    } catch (error) {
-      res.status(500).json({ message: error.message });
-    }
+  } catch (err) {
+    console.error('Simulation error:', err);
   }
 };
 
-module.exports = healthController;
+/* =========================
+   start interval ONLY ONCE
+========================= */
+if (!intervalStarted) {
+  setInterval(simulateSensorData, 5000);
+  intervalStarted = true;
+}
+
+/* =========================
+   Start server
+========================= */
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
