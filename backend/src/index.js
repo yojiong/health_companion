@@ -1,4 +1,12 @@
 require('dotenv').config();
+const cors = require('cors');
+
+app.use(cors({
+  origin: 'https://health_companion-1-nfds.onrender.com',  // 你的前端域名
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
