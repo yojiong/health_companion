@@ -7,7 +7,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'https://health_companion-2.onrender.com',
+        target: 'https://health-companion-2.onrender.com',
         changeOrigin: true
       }
     }
