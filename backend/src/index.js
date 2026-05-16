@@ -1,5 +1,6 @@
 require('dotenv').config();
 
+
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -16,49 +17,24 @@ const HealthData = require('./models/HealthData');
 const Alert = require('./models/Alert');
 
 const app = express();
-
-/* =========================
-   CORS（统一修复）
-========================= */
-const allowedOrigins = [
-  'http://localhost:5173',
-  'https://health-companion-1.onrender.com',
-  'https://health-companion-2.onrender.com'
-];
-
 app.use(cors({
-  origin: allowedOrigins,
+  origin: [
+    'http://localhost:5173',
+    'https://health-companion-1-nfd5.onrender.com'
+  ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-app.use(express.json());
-
-/* =========================
-   HTTP + Socket
-========================= */
 const server = http.createServer(app);
-
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigins,
-    methods: ['GET', 'POST'],
-    credentials: true
+    origin: 'http://localhost:5173',
+    methods: ['GET', 'POST']
   }
 });
 
-/* =========================
-   DB Init
-========================= */
-connectDB().then(() => {
-  console.log('DB connected');
-  initDemoUsers();
-});
-
-/* =========================
-   Demo users
-========================= */
 const initDemoUsers = async () => {
   try {
     const demoUsers = [
@@ -75,53 +51,44 @@ const initDemoUsers = async () => {
         password: 'password',
         role: 'caregiver',
         phone: '098-765-4321'
+      },
+      {
+        name: 'Demo Institution',
+        email: 'inst@demo.com',
+        password: 'password',
+        role: 'institution',
+        phone: '111-222-3333',
+        institutionName: 'Health Care Institution'
       }
     ];
 
     for (const userData of demoUsers) {
-      const exists = await User.findOne({ email: userData.email });
-      if (!exists) {
+      const existingUser = await User.findOne({ email: userData.email });
+      if (!existingUser) {
         await User.create(userData);
         console.log(`Created demo user: ${userData.email}`);
       }
     }
-  } catch (err) {
-    console.error(err);
+  } catch (error) {
+    console.error('Error initializing demo users:', error);
   }
 };
 
-/* =========================
-   Routes
-========================= */
+connectDB().then(() => {
+  initDemoUsers();
+});
+
+
+app.use(express.json());
+
 app.use('/api/auth', authRoutes);
 app.use('/api/health', healthRoutes);
 app.use('/api/medications', medicationRoutes);
 app.use('/api/alerts', alertRoutes);
 
 app.get('/api/health-check', (req, res) => {
-  res.json({ status: 'ok' });
+  res.json({ status: 'ok', message: 'Health Companion API is running' });
 });
-
-/* =========================
-   Socket
-========================= */
-io.on('connection', (socket) => {
-  console.log('Socket connected:', socket.id);
-
-  socket.on('join', (userId) => {
-    if (!userId) return;
-    socket.join(userId);
-  });
-
-  socket.on('disconnect', () => {
-    console.log('Socket disconnected');
-  });
-});
-
-/* =========================
-   防止重复 interval
-========================= */
-let intervalStarted = false;
 
 const simulateSensorData = async () => {
   try {
@@ -130,62 +97,91 @@ const simulateSensorData = async () => {
     for (const patient of patients) {
       const heartRate = Math.floor(Math.random() * 40) + 60;
       const spO2 = Math.floor(Math.random() * 8) + 92;
-      const temperature = Math.random() * 2 + 36;
+      const temperature = (Math.random() * 2) + 36;
+      const steps = Math.floor(Math.random() * 500);
+      const sleepHours = Math.random() * 4 + 6;
 
-      const data = await HealthData.create({
+      const healthData = await HealthData.create({
         userId: patient._id,
         heartRate,
         spO2,
-        temperature,
-        steps: Math.floor(Math.random() * 500),
-        sleepHours: Math.random() * 4 + 6
+        steps,
+        sleepHours,
+        temperature
       });
 
-      io.to(patient._id.toString()).emit('healthData', data);
+      io.to(patient._id.toString()).emit('healthData', healthData);
 
-      // heart alert
       if (heartRate > 100) {
-        const alert = await Alert.create({
+        const existingAlert = await Alert.findOne({
           userId: patient._id,
-          alertType: 'heart_rate',
-          severity: heartRate > 120 ? 'critical' : 'high',
-          message: `Heart rate: ${heartRate}`,
-          value: heartRate
+          alertType: 'high_heart_rate',
+          isResolved: false,
+          createdAt: { $gte: new Date(Date.now() - 60000) }
         });
+     if (!existingAlert) {
+          const alert = await Alert.create({
+            userId: patient._id,
+            alertType: 'high_heart_rate',
+            severity: heartRate > 120 ? 'critical' : 'high',
+            message: `High heart rate detected: ${heartRate} bpm`,
+            value: heartRate
+          });
 
-        io.to(patient._id.toString()).emit('alert', alert);
+          const caregivers = await User.find({ role: 'caregiver' });
+          caregivers.forEach(caregiver => {
+            io.to(caregiver._id.toString()).emit('alert', alert);
+          });
+        }
       }
 
-      // oxygen alert
       if (spO2 < 90) {
-        const alert = await Alert.create({
+        const existingAlert = await Alert.findOne({
           userId: patient._id,
-          alertType: 'spO2',
-          severity: 'critical',
-          message: `Low SpO2: ${spO2}%`,
-          value: spO2
+          alertType: 'low_spO2',
+          isResolved: false,
+          createdAt: { $gte: new Date(Date.now() - 60000) }
         });
 
-        io.to(patient._id.toString()).emit('alert', alert);
+        if (!existingAlert) {
+          const alert = await Alert.create({
+            userId: patient._id,
+            alertType: 'low_spO2',
+            severity: 'critical',
+            message: `Low blood oxygen detected: ${spO2}%`,
+            value: spO2
+          });
+
+          const caregivers = await User.find({ role: 'caregiver' });
+          caregivers.forEach(caregiver => {
+            io.to(caregiver._id.toString()).emit('alert', alert);
+          });
+        }
       }
     }
-  } catch (err) {
-    console.error('Simulation error:', err);
+  } catch (error) {
+    console.error('Sensor simulation error:', error);
   }
 };
 
-/* =========================
-   start interval ONLY ONCE
-========================= */
-if (!intervalStarted) {
-  setInterval(simulateSensorData, 5000);
-  intervalStarted = true;
-}
+io.on('connection', (socket) => {
+  console.log('User connected:', socket.id);
 
-/* =========================
-   Start server
-========================= */
+  socket.on('join', (userId) => {
+    socket.join(userId);
+    console.log(`User ${userId} joined room`);
+  });
+
+  socket.on('disconnect', () => {
+    console.log('User disconnected:', socket.id);
+  });
+});
+
+setInterval(simulateSensorData, 5000);
+
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
+   
