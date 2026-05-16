@@ -18,7 +18,10 @@ const Alert = require('./models/Alert');
 
 const app = express();
 app.use(cors({
-  origin: 'https://health-companion-1-nfds.onrender.com',  // 你的前端域名
+  origin: [
+    'http://localhost:5173',
+    'https://health-companion-1-nfd5.onrender.com'
+  ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
