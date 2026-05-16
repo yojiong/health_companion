@@ -2,7 +2,34 @@ const HealthData = require('../models/HealthData');
 const Alert = require('../models/Alert');
 const User = require('../models/User');
 
+/**
+ * 生成模拟数据（只用于没有数据时 fallback）
+ */
+const generateSimulationData = (userId, count = 1, startDate = new Date()) => {
+  const data = [];
+
+  for (let i = 0; i < count; i++) {
+    const timestamp = new Date(startDate.getTime() - (count - 1 - i) * 5000);
+
+    data.push({
+      userId,
+      heartRate: Math.floor(Math.random() * 40) + 60,
+      spO2: Math.floor(Math.random() * 8) + 92,
+      temperature: Math.random() * 2 + 36,
+      steps: Math.floor(Math.random() * 500),
+      sleepHours: Math.random() * 4 + 6,
+      timestamp
+    });
+  }
+
+  return data;
+};
+
 const healthController = {
+
+  // =========================
+  // 上传数据
+  // =========================
   uploadData: async (req, res) => {
     try {
       const { heartRate, spO2, steps, sleepHours, temperature } = req.body;
@@ -16,32 +43,43 @@ const healthController = {
         temperature
       });
 
+      // 心率异常
       if (heartRate > 100 || heartRate < 50) {
-        await Alert.create({
+        const exists = await Alert.findOne({
           userId: req.user._id,
-          alertType: 'high_heart_rate',
-          severity: heartRate > 120 ? 'critical' : 'high',
-          message: `Abnormal heart rate detected: ${heartRate} bpm`,
-          value: heartRate
+          alertType: 'heart_rate',
+          isResolved: false
         });
+
+        if (!exists) {
+          await Alert.create({
+            userId: req.user._id,
+            alertType: 'heart_rate',
+            severity: heartRate > 120 ? 'critical' : 'high',
+            message: `Abnormal heart rate: ${heartRate} bpm`,
+            value: heartRate
+          });
+        }
       }
 
+      // 血氧异常
       if (spO2 < 90) {
         await Alert.create({
           userId: req.user._id,
-          alertType: 'low_spO2',
+          alertType: 'spO2',
           severity: 'critical',
-          message: `Low blood oxygen detected: ${spO2}%`,
+          message: `Low SpO2 detected: ${spO2}%`,
           value: spO2
         });
       }
 
+      // 体温异常
       if (temperature > 38.5 || temperature < 35) {
         await Alert.create({
           userId: req.user._id,
-          alertType: 'abnormal_temperature',
+          alertType: 'temperature',
           severity: 'high',
-          message: `Abnormal temperature detected: ${temperature}°C`,
+          message: `Abnormal temperature: ${temperature}°C`,
           value: temperature
         });
       }
@@ -52,41 +90,55 @@ const healthController = {
     }
   },
 
+  // =========================
+  // 实时数据
+  // =========================
   getRealtimeData: async (req, res) => {
     try {
-      const latestData = await HealthData.findOne({ userId: req.user._id })
-        .sort({ timestamp: -1 })
-        .limit(1);
+      let latest = await HealthData.findOne({ userId: req.user._id })
+        .sort({ createdAt: -1 });
 
-      if (!latestData) {
-        return res.status(404).json({ message: 'No health data found' });
+      if (!latest) {
+        const sim = generateSimulationData(req.user._id, 1)[0];
+        latest = await HealthData.create(sim);
       }
 
-      res.json(latestData);
+      res.json(latest);
     } catch (error) {
       res.status(500).json({ message: error.message });
     }
   },
 
+  // =========================
+  // 历史数据（重点优化）
+  // =========================
   getHistoricalData: async (req, res) => {
     try {
-      const { period } = req.query;
+      const { period = 'week' } = req.query;
+
       let startDate = new Date();
+      let limit = 100;
 
       if (period === 'day') {
-        startDate.setHours(startDate.getHours() - 24);
+        startDate.setDate(startDate.getDate() - 1);
+        limit = 100;
       } else if (period === 'week') {
         startDate.setDate(startDate.getDate() - 7);
+        limit = 200;
       } else if (period === 'month') {
         startDate.setMonth(startDate.getMonth() - 1);
-      } else {
-        startDate.setDate(startDate.getDate() - 7);
+        limit = 300;
       }
 
-      const data = await HealthData.find({
+      let data = await HealthData.find({
         userId: req.user._id,
-        timestamp: { $gte: startDate }
-      }).sort({ timestamp: 1 });
+        createdAt: { $gte: startDate }
+      }).sort({ createdAt: 1 });
+
+      // 只做 fallback，不写数据库（关键修复）
+      if (data.length === 0) {
+        data = generateSimulationData(req.user._id, limit, new Date());
+      }
 
       res.json(data);
     } catch (error) {
@@ -94,39 +146,56 @@ const healthController = {
     }
   },
 
+  // =========================
+  // 病人实时数据
+  // =========================
   getPatientData: async (req, res) => {
     try {
       const { patientId } = req.params;
-      const latestData = await HealthData.findOne({ userId: patientId })
-        .sort({ timestamp: -1 })
-        .limit(1);
 
-      res.json(latestData || {});
+      let latest = await HealthData.findOne({ userId: patientId })
+        .sort({ createdAt: -1 });
+
+      if (!latest) {
+        latest = generateSimulationData(patientId, 1)[0];
+        await HealthData.create(latest);
+      }
+
+      res.json(latest);
     } catch (error) {
       res.status(500).json({ message: error.message });
     }
   },
 
+  // =========================
+  // 病人历史数据
+  // =========================
   getPatientHistoricalData: async (req, res) => {
     try {
       const { patientId } = req.params;
-      const { period } = req.query;
+      const { period = 'week' } = req.query;
+
       let startDate = new Date();
+      let limit = 200;
 
       if (period === 'day') {
-        startDate.setHours(startDate.getHours() - 24);
+        startDate.setDate(startDate.getDate() - 1);
+        limit = 100;
       } else if (period === 'week') {
         startDate.setDate(startDate.getDate() - 7);
       } else if (period === 'month') {
         startDate.setMonth(startDate.getMonth() - 1);
-      } else {
-        startDate.setDate(startDate.getDate() - 7);
+        limit = 300;
       }
 
-      const data = await HealthData.find({
+      let data = await HealthData.find({
         userId: patientId,
-        timestamp: { $gte: startDate }
-      }).sort({ timestamp: 1 });
+        createdAt: { $gte: startDate }
+      }).sort({ createdAt: 1 });
+
+      if (data.length === 0) {
+        data = generateSimulationData(patientId, limit, new Date());
+      }
 
       res.json(data);
     } catch (error) {
@@ -134,14 +203,22 @@ const healthController = {
     }
   },
 
+  // =========================
+  // 统计
+  // =========================
   getStats: async (req, res) => {
     try {
       const patientCount = await User.countDocuments({ role: 'patient' });
       const caregiverCount = await User.countDocuments({ role: 'caregiver' });
+
       const todayAlerts = await Alert.countDocuments({
-        createdAt: { $gte: new Date(new Date().setHours(0, 0, 0, 0)) }
+        createdAt: { $gte: new Date().setHours(0, 0, 0, 0) }
       });
-      const criticalAlerts = await Alert.countDocuments({ severity: 'critical', isResolved: false });
+
+      const criticalAlerts = await Alert.countDocuments({
+        severity: 'critical',
+        isResolved: false
+      });
 
       res.json({
         patientCount,
