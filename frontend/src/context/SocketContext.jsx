@@ -18,7 +18,7 @@ export const SocketProvider = ({ children }) => {
 
   useEffect(() => {
     if (user && user._id) {
-      const newSocket = io('https://health_companion-2.onrender.com');
+      const newSocket = io('https://health-companion-2.onrender.com');
       newSocket.emit('join', user._id);
       setSocket(newSocket);
 
