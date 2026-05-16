@@ -93,21 +93,28 @@ const healthController = {
   // =========================
   // 实时数据
   // =========================
-  getRealtimeData: async (req, res) => {
-    try {
-      let latest = await HealthData.findOne({ userId: req.user._id })
-        .sort({ createdAt: -1 });
+ getRealtimeData: async (req, res) => {
+  try {
+    let latest = await HealthData.findOne({ userId: req.user._id })
+      .sort({ createdAt: -1 });
 
-      if (!latest) {
-        const sim = generateSimulationData(req.user._id, 1)[0];
-        latest = await HealthData.create(sim);
-      }
-
-      res.json(latest);
-    } catch (error) {
-      res.status(500).json({ message: error.message });
+    if (!latest) {
+      latest = {
+        userId: req.user._id,
+        heartRate: 75,
+        spO2: 97,
+        temperature: 36.5,
+        steps: 100,
+        sleepHours: 7,
+        createdAt: new Date()
+      };
     }
-  },
+
+    res.json(latest);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
 
   // =========================
   // 历史数据（重点优化）
