@@ -11,12 +11,11 @@ const LoginPage = () => {
   const { login } = useAuth();
   const navigate = useNavigate();
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+  const performLogin = async (loginEmail, loginPassword) => {
     setError('');
     setLoading(true);
 
-    const result = await login(email, password);
+    const result = await login(loginEmail, loginPassword);
 
     if (result.success) {
       const userInfo = JSON.parse(localStorage.getItem('userInfo'));
@@ -32,6 +31,17 @@ const LoginPage = () => {
     }
 
     setLoading(false);
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    await performLogin(email, password);
+  };
+
+  const handleQuickLogin = async (demoEmail) => {
+    setEmail(demoEmail);
+    setPassword('password');
+    await performLogin(demoEmail, 'password');
   };
 
   return (
@@ -109,20 +119,35 @@ const LoginPage = () => {
           </div>
 
           <div className="mt-8 pt-6 border-t border-white/10">
-            <p className="text-gray-500 text-xs text-center mb-4">Demo Accounts</p>
+            <p className="text-gray-500 text-xs text-center mb-4">Demo Accounts (click to log in)</p>
             <div className="grid grid-cols-3 gap-2 text-xs">
-              <div className="bg-white/5 rounded-lg p-2 text-center">
+              <button
+                type="button"
+                onClick={() => handleQuickLogin('patient@demo.com')}
+                disabled={loading}
+                className="bg-white/5 hover:bg-medical-cyan/20 border border-transparent hover:border-medical-cyan/40 rounded-lg p-2 text-center transition disabled:opacity-50"
+              >
                 <div className="text-gray-400 mb-1">Patient</div>
-                <div className="text-gray-300">patient@demo.com</div>
-              </div>
-              <div className="bg-white/5 rounded-lg p-2 text-center">
+                <div className="text-gray-300 break-all">patient@demo.com</div>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleQuickLogin('care@demo.com')}
+                disabled={loading}
+                className="bg-white/5 hover:bg-medical-cyan/20 border border-transparent hover:border-medical-cyan/40 rounded-lg p-2 text-center transition disabled:opacity-50"
+              >
                 <div className="text-gray-400 mb-1">Caregiver</div>
-                <div className="text-gray-300">care@demo.com</div>
-              </div>
-              <div className="bg-white/5 rounded-lg p-2 text-center">
+                <div className="text-gray-300 break-all">care@demo.com</div>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleQuickLogin('inst@demo.com')}
+                disabled={loading}
+                className="bg-white/5 hover:bg-medical-cyan/20 border border-transparent hover:border-medical-cyan/40 rounded-lg p-2 text-center transition disabled:opacity-50"
+              >
                 <div className="text-gray-400 mb-1">Institution</div>
-                <div className="text-gray-300">inst@demo.com</div>
-              </div>
+                <div className="text-gray-300 break-all">inst@demo.com</div>
+              </button>
             </div>
           </div>
         </div>
